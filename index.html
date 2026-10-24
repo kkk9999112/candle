@@ -51,7 +51,13 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .chip{font-size:13px;font-weight:600;padding:7px 12px;border-radius:999px;border:1px solid var(--line);
   background:transparent;color:var(--fg);cursor:pointer}
 .chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.chip .x{margin-left:6px;color:var(--err)}
+.favedit{display:grid;gap:6px}
+.fr{display:grid;grid-template-columns:1fr 40px 40px auto;gap:6px;align-items:center;background:var(--soft);border-radius:10px;padding:6px 6px 6px 12px}
+.fn{font-size:14px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ft{font:12px var(--mono);color:var(--muted);margin-left:6px;font-weight:400}
+.fb{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font-size:13px;cursor:pointer;padding:0 10px}
+.fb:disabled{opacity:.3;cursor:default}
+.fb.del{color:var(--err)}
 .empty{font-size:12.5px;color:var(--muted);margin:0}
 .seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;background:var(--soft);border-radius:10px;padding:3px;gap:3px}
 .seg button{font-size:14px;padding:9px 4px;border:0;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}
@@ -101,7 +107,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       <p class="lbl"><label for="sym">종목</label></p>
       <div class="symrow">
         <div class="combo">
-          <input id="sym" type="text" value="비트코인" autocomplete="off" spellcheck="false" enterkeyhint="search"
+          <input id="sym" type="text" value="BTC" autocomplete="off" spellcheck="false" enterkeyhint="search"
             role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="sug" placeholder="비트코인, ㅇㄷㄹㅇ, pepe">
           <ul id="sug" role="listbox" hidden></ul>
         </div>
@@ -127,10 +133,9 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <div>
       <p class="lbl">기간</p>
       <div class="seg" id="range">
-        <button type="button" data-v="7">1주</button>
-        <button type="button" data-v="30">1달</button>
-        <button type="button" data-v="90" class="on">3달</button>
-        <button type="button" data-v="365">1년</button>
+        <button type="button" data-v="365" class="on">1년</button>
+        <button type="button" data-v="730">2년</button>
+        <button type="button" data-v="1095">3년</button>
         <button type="button" data-v="custom">직접</button>
       </div>
       <div class="dates" id="dates" hidden>
@@ -198,7 +203,7 @@ const INTERVALS={
 };
 const FAV_KEY="binance_daily_favorites";
 const $=id=>document.getElementById(id);
-const S={iv:"1d",range:"90",mk:"spot",zoom:"90",results:[],cur:0,period:null};
+const S={iv:"1d",range:"365",mk:"spot",zoom:"90",results:[],cur:0,period:null};
 
 // ───── 한글 종목명 ─────
 const COIN_TXT=`BTC:비트코인:비트,빗코
@@ -343,7 +348,7 @@ function closeSug(){sugEl.hidden=true;symEl.setAttribute("aria-expanded","false"
 function pick(c){
   const v=symEl.value,head=v.slice(0,v.lastIndexOf(",")+1);
   const parts=head.split(",").map(s=>s.trim()).filter(Boolean);
-  if(!parts.map(resolve).includes(c.base+"USDT"))parts.push(c.name);
+  if(!parts.map(resolve).includes(c.base+"USDT"))parts.push(c.base);
   symEl.value=parts.join(", ");closeSug();drawFavs();
 }
 symEl.addEventListener("input",()=>{openSug();drawFavs()});
@@ -363,24 +368,41 @@ symEl.addEventListener("keydown",e=>{
 let favs=(()=>{try{return JSON.parse(localStorage.getItem(FAV_KEY))||[]}catch(e){return []}})();
 let editing=false;
 const saveFavs=()=>{try{localStorage.setItem(FAV_KEY,JSON.stringify(favs))}catch(e){}};
+function moveFav(i,d){
+  const j=i+d;if(j<0||j>=favs.length)return;
+  [favs[i],favs[j]]=[favs[j],favs[i]];saveFavs();drawFavs();
+  const btn=$("favs").children[j]?.querySelector(d<0?".mv-up":".mv-dn");if(btn&&!btn.disabled)btn.focus();
+}
 function drawFavs(){
   if(!favs.length)editing=false;
   const cur=symbols(),box=$("favs");box.innerHTML="";
-  favs.forEach(s=>{
+  box.className=editing?"favedit":"chips";
+  favs.forEach((s,i)=>{
+    if(editing){
+      // 편집: 한 줄씩 [이름] [↑] [↓] [삭제]
+      const row=document.createElement("div");row.className="fr";
+      const nm=document.createElement("span");nm.className="fn";nm.textContent=label(s);
+      const tk=document.createElement("span");tk.className="ft";tk.textContent=baseOf(s);nm.appendChild(tk);
+      const mk=(txt,cls,aria,fn,dis)=>{const b=document.createElement("button");b.type="button";b.className="fb "+cls;
+        b.textContent=txt;b.setAttribute("aria-label",aria);b.disabled=dis;b.onclick=fn;return b};
+      row.append(nm,
+        mk("▲","mv-up",label(s)+" 위로",()=>moveFav(i,-1),i===0),
+        mk("▼","mv-dn",label(s)+" 아래로",()=>moveFav(i,1),i===favs.length-1),
+        mk("삭제","del",label(s)+" 즐겨찾기에서 삭제",()=>{favs=favs.filter(f=>f!==s);saveFavs();drawFavs()},false));
+      box.appendChild(row);return;
+    }
     const b=document.createElement("button");b.type="button";
-    b.className="chip"+(!editing&&cur.includes(s)?" on":"");b.textContent=label(s);b.title=s;
-    if(editing){const x=document.createElement("span");x.className="x";x.textContent="×";b.appendChild(x);
-      b.onclick=()=>{favs=favs.filter(f=>f!==s);saveFavs();drawFavs()};}
-    else b.onclick=()=>{
+    b.className="chip"+(cur.includes(s)?" on":"");b.textContent=label(s);b.title=s;
+    b.onclick=()=>{
       const parts=symEl.value.split(",").map(t=>t.trim()).filter(Boolean);
       const keep=parts.filter(t=>resolve(t)!==s);
-      if(keep.length===parts.length)keep.push(label(s));
+      if(keep.length===parts.length)keep.push(baseOf(s));
       symEl.value=keep.join(", ");drawFavs();
     };
     box.appendChild(b);
   });
   $("favHint").textContent=!favs.length?"종목을 입력하고 ☆를 누르면 여기에 저장돼요."
-    :editing?"지울 종목을 누르세요.":"";
+    :editing?"▲▼로 순서를 바꾸고, 삭제로 지워요. 다 했으면 완료를 누르세요.":"";
   $("favHint").hidden=!$("favHint").textContent;
   $("editFav").hidden=!favs.length;$("editFav").textContent=editing?"완료":"편집";
   const all=cur.length&&cur.every(s=>favs.includes(s));
@@ -401,7 +423,7 @@ function seg(id,key,after){
   });
 }
 const isoDay=ms=>new Date(ms).toISOString().slice(0,10);
-$("end").value=isoDay(Date.now());$("start").value=isoDay(Date.now()-90*DAY);
+$("end").value=isoDay(Date.now());$("start").value=isoDay(Date.now()-365*DAY);
 seg("iv","iv",()=>{$("foot").textContent=INTERVALS[S.iv].foot});
 seg("range","range",()=>{$("dates").hidden=S.range!=="custom"});
 seg("mk","mk");
