@@ -95,6 +95,15 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .list .r .g{text-align:right;font-weight:700}
 .bar{justify-self:end;width:6px;border-radius:2px;min-height:3px}
 .save{font-size:15px;font-weight:700;padding:13px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg);cursor:pointer}
+.liverow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}
+.live{font-size:12.5px;font-weight:700;border:1px solid var(--line);border-radius:999px;padding:5px 11px;background:var(--card);color:var(--muted);cursor:pointer}
+.live .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:1px}
+.live.on{color:var(--fg);border-color:var(--ok)}
+.live.on .dot{background:var(--ok);animation:pulse 1.6s infinite}
+.live.wait .dot{background:var(--accent)}
+#liveTxt{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+@keyframes pulse{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.live.on .dot{animation:none}}
 .foot{font-size:12px;color:var(--muted);margin:0 2px}
 </style>
 </head>
@@ -147,8 +156,8 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <div>
       <p class="lbl">시장</p>
       <div class="seg" id="mk">
-        <button type="button" data-v="spot" class="on">현물</button>
-        <button type="button" data-v="futures">선물(USDT-M)</button>
+        <button type="button" data-v="futures" class="on">선물(USDT-M)</button>
+        <button type="button" data-v="spot">현물</button>
       </div>
     </div>
 
@@ -163,6 +172,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       <span class="px" id="px"></span>
       <span class="chg" id="chg"></span>
       <span class="note" id="note"></span>
+      <div class="liverow"><button type="button" class="live" id="live" aria-pressed="true"><span class="dot"></span>실시간</button><span id="liveTxt"></span></div>
     </div>
     <div class="seg" id="zoom">
       <button type="button" data-v="30">최근 30개</button>
@@ -203,7 +213,7 @@ const INTERVALS={
 };
 const FAV_KEY="binance_daily_favorites";
 const $=id=>document.getElementById(id);
-const S={iv:"1d",range:"365",mk:"spot",zoom:"90",results:[],cur:0,period:null};
+const S={iv:"1d",range:"365",mk:"futures",zoom:"90",results:[],cur:0,period:null};
 
 // ───── 한글 종목명 ─────
 const COIN_TXT=`BTC:비트코인:비트,빗코
@@ -287,7 +297,7 @@ const CHO="ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ";
 const cho=s=>[...s].map(ch=>{const c=ch.charCodeAt(0)-0xAC00;return c>=0&&c<11172?CHO[Math.floor(c/588)]:ch}).join("");
 const isCho=s=>/^[ㄱ-ㅎ]+$/.test(s);
 const QUOTES=/(USDT|USDC|FDUSD)$/;
-const baseOf=t=>t.endsWith("USDT")?t.slice(0,-4):t;
+const baseOf=t=>{t=t.endsWith("USDT")?t.slice(0,-4):t;return /^1000[A-Z]/.test(t)?t.slice(4):t};
 const nameOf=t=>(BY_BASE[baseOf(t)]||{}).name;
 const label=t=>nameOf(t)||baseOf(t);
 
@@ -427,13 +437,13 @@ $("end").value=isoDay(Date.now());$("start").value=isoDay(Date.now()-365*DAY);
 seg("iv","iv",()=>{$("foot").textContent=INTERVALS[S.iv].foot});
 seg("range","range",()=>{$("dates").hidden=S.range!=="custom"});
 seg("mk","mk");
-seg("zoom","zoom",()=>draw());
+seg("zoom","zoom",()=>{S.pin=null;draw()});
 $("foot").textContent=INTERVALS[S.iv].foot;
 drawFavs();
 
 // ───── 데이터 받기 ─────
-async function fetchKlines(sym,startMs,endMs,onProgress){
-  const {url,limit}=MARKETS[S.mk],iv=S.iv,step=INTERVALS[iv].ms,rows=[];let cur=startMs;
+async function fetchKlines(sym,startMs,endMs,onProgress,iv=S.iv,mk=S.mk){
+  const {url,limit}=MARKETS[mk],step=INTERVALS[iv].ms,rows=[];let cur=startMs;
   while(cur<=endMs){
     const q=`${url}?symbol=${encodeURIComponent(sym)}&interval=${iv}&startTime=${cur}&endTime=${endMs}&limit=${limit}`;
     let res;
@@ -441,7 +451,7 @@ async function fetchKlines(sym,startMs,endMs,onProgress){
     if(!res.ok){
       const body=await res.text();
       if(res.status===451)throw new Error("지금 네트워크에서는 바이낸스 접속이 막혀 있어요(451).");
-      if(body.includes("Invalid symbol"))throw new Error(`바이낸스 ${MARKETS[S.mk].name}에 없는 종목이에요.`);
+      if(body.includes("Invalid symbol"))throw Object.assign(new Error(`바이낸스 ${MARKETS[mk].name}에 없는 종목이에요.`),{invalid:true});
       throw new Error(`오류 ${res.status}`);
     }
     const data=await res.json();if(!data.length)break;
@@ -474,23 +484,31 @@ async function run(){
   const syms=symbols();
   if(!syms.length){setStatus([["종목을 입력하세요.",1]]);return}
   let p;try{p=period()}catch(e){setStatus([[e.message,1]]);return}
+  stopLive();
   $("go").disabled=true;
   const results=[],msgs=[],ivName=INTERVALS[S.iv].name;
   for(const sym of syms){
     const show=n=>setStatus([...msgs,[`${label(sym)} ${ivName}봉 받는 중… ${n?n.toLocaleString()+"개":""}`]]);
     show(0);
     try{
-      const rows=await fetchKlines(sym,p.a,p.b,show);
+      let real=sym,rows;
+      try{rows=await fetchKlines(sym,p.a,p.b,show)}
+      catch(e){
+        // 선물에서는 PEPE·SHIB 같은 코인이 1000PEPEUSDT처럼 1000개 단위로 거래돼서 한 번 더 찾아봄
+        if(!(e.invalid&&S.mk==="futures"&&!sym.startsWith("1000")))throw e;
+        real="1000"+sym;
+        try{rows=await fetchKlines(real,p.a,p.b,show)}catch(e2){throw e}
+      }
       if(!rows.length)msgs.push([`${label(sym)}: 이 기간에는 데이터가 없어요.`,1]);
-      else results.push({sym,rows,iv:S.iv,mk:S.mk});
+      else results.push({sym:real,rows,iv:S.iv,mk:S.mk});
     }catch(e){msgs.push([`${label(sym)}: ${e.message}`,1])}
   }
   $("go").disabled=false;
   if(results.length)msgs.unshift([`${results.length}개 종목 · ${ivName}봉 · ${p.s} ~ ${p.e}`]);
   setStatus(msgs);
   if(!results.length){$("res").hidden=true;return}
-  S.results=results;S.cur=0;S.period=p;
-  $("res").hidden=false;drawTabs();showCur();
+  S.results=results;S.cur=0;S.period=p;S.pin=null;
+  $("res").hidden=false;drawTabs();showCur();startLive();
   if(matchMedia("(max-width:700px)").matches)$("res").scrollIntoView({behavior:"smooth",block:"start"});
 }
 $("go").onclick=run;
@@ -508,16 +526,17 @@ function drawTabs(){
   const box=$("tabs");box.innerHTML="";box.hidden=S.results.length<2;
   S.results.forEach((r,i)=>{
     const b=document.createElement("button");b.type="button";b.className="chip"+(i===S.cur?" on":"");
-    b.textContent=label(r.sym);b.onclick=()=>{S.cur=i;drawTabs();showCur()};box.appendChild(b);
+    b.textContent=label(r.sym);b.onclick=()=>{S.cur=i;S.pin=null;drawTabs();showCur()};box.appendChild(b);
   });
 }
 function showCur(){
   const r=S.results[S.cur],rows=r.rows,last=rows[rows.length-1],prev=rows[rows.length-2]||last;
-  $("nm").textContent=`${label(r.sym)} · ${r.sym} · ${MARKETS[r.mk].name} ${INTERVALS[r.iv].name}봉`;
+  $("nm").textContent=`${label(r.sym)} · ${r.sym} · ${MARKETS[r.mk].name} ${INTERVALS[r.iv].name}봉${r.sym.startsWith("1000")?" · 1000개 기준 가격":""}`;
   $("px").textContent="$"+fmtP(last.c);
   const c=$("chg");c.className="chg "+cls(last.c,prev.c);
   c.textContent=`${last.c>=prev.c?"▲":"▼"} ${fmtP(Math.abs(last.c-prev.c),last.c)} (${pct(last.c,prev.c)}) 직전 봉 대비`;
-  $("note").textContent=`마지막 봉 ${tLabel(last.t,r.iv)} · 진행 중일 수 있어요`;
+  const open=k=>k.t+INTERVALS[r.iv].ms>Date.now();
+  $("note").textContent=`마지막 봉 ${tLabel(last.t,r.iv)} · ${open(last)?"진행 중":"마감"}`;
   const hi=rows.reduce((a,b)=>b.h>a.h?b:a),lo=rows.reduce((a,b)=>b.l<a.l?b:a);
   $("sHi").textContent="$"+fmtP(hi.h);$("sLo").textContent="$"+fmtP(lo.l);
   const rt=$("sRt");rt.textContent=pct(last.c,rows[0].o);rt.className="v "+cls(last.c,rows[0].o);
@@ -527,7 +546,7 @@ function showCur(){
     const p=rows[rows.length-2-i];
     const row=document.createElement("div");row.className="r";
     row.innerHTML=`<span class="t"></span><span class="p"></span><span class="g"></span><span class="bar"></span>`;
-    row.children[0].textContent=tLabel(k.t,r.iv)+(i===0?" (진행)":"");
+    row.children[0].textContent=tLabel(k.t,r.iv)+(i===0&&open(k)?" (진행)":"");
     row.children[1].textContent=fmtP(k.c);
     if(p){row.children[2].textContent=pct(k.c,p.c);row.children[2].classList.add(cls(k.c,p.c))}
     const bar=row.children[3];bar.style.height=(4+Math.abs(k.c-k.o)/k.o/maxBody*18)+"px";
@@ -576,20 +595,126 @@ function draw(){
   const last=rows[rows.length-1],ly=Math.round(y(last.c))+.5;
   ctx.setLineDash([3,3]);ctx.strokeStyle=last.c>=last.o?UP:DN;ctx.beginPath();ctx.moveTo(0,ly);ctx.lineTo(cw,ly);ctx.stroke();ctx.setLineDash([]);
   geo={rows,bw,cw,y,H,iv:r.iv};
-  $("tip").textContent=asLine?"봉이 많아서 종가 선으로 보여줘요. 누르면 그 봉의 가격이 보여요":"차트를 누르거나 밀면 그 봉의 가격이 보여요";
+  const pi=S.pin==null?-1:rows.findIndex(k=>k.t===S.pin);
+  if(pi<0){
+    $("tip").textContent=asLine?"봉이 많아서 종가 선으로 보여줘요. 누르면 그 봉의 가격이 보여요":"차트를 누르거나 밀면 그 봉의 가격이 보여요";
+    return;
+  }
+  const k=rows[pi],X=Math.round(pi*bw+bw/2)+.5;ctx.strokeStyle=MUT;ctx.setLineDash([2,3]);
+  ctx.beginPath();ctx.moveTo(X,0);ctx.lineTo(X,H);ctx.stroke();ctx.setLineDash([]);
+  $("tip").textContent=`${tLabel(k.t,r.iv)}  시 ${fmtP(k.o)}  고 ${fmtP(k.h)}  저 ${fmtP(k.l)}  종 ${fmtP(k.c)}`;
 }
 function inspect(e){
   if(!geo)return;
   const rc=cv.getBoundingClientRect(),x=e.clientX-rc.left,i=Math.min(geo.rows.length-1,Math.max(0,Math.floor(x/geo.bw)));
-  const k=geo.rows[i];draw();
-  const X=Math.round(i*geo.bw+geo.bw/2)+.5;ctx.strokeStyle=css("--muted");ctx.setLineDash([2,3]);
-  ctx.beginPath();ctx.moveTo(X,0);ctx.lineTo(X,geo.H);ctx.stroke();ctx.setLineDash([]);
-  $("tip").textContent=`${tLabel(k.t,geo.iv)}  시 ${fmtP(k.o)}  고 ${fmtP(k.h)}  저 ${fmtP(k.l)}  종 ${fmtP(k.c)}`;
+  S.pin=geo.rows[i].t;draw();
 }
 cv.addEventListener("pointerdown",e=>{cv.setPointerCapture(e.pointerId);inspect(e)});
 cv.addEventListener("pointermove",e=>{if(e.buttons||e.pointerType==="mouse")inspect(e)});
 window.addEventListener("resize",draw);
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change",draw);
+
+// ───── 실시간 (바이낸스 공개 웹소켓, 조회한 종목 전체) ─────
+const WS_URL={spot:"wss://stream.binance.com:9443/stream?streams=",futures:"wss://fstream.binance.com/stream?streams="};
+const L={on:true,ws:null,retryT:null,mode:"off",poll:null,renderT:null,last:0};
+const hhmmss=ms=>new Date(ms+KST).toISOString().slice(11,19);
+function liveEligible(){
+  const r=S.results[0];if(!r||!S.period)return false;
+  return S.period.b>=Date.now()-INTERVALS[r.iv].ms;     // 오늘(현재)까지 조회했을 때만
+}
+function liveUI(){
+  const b=$("live"),t=$("liveTxt"),ok=liveEligible();
+  b.hidden=!ok;b.setAttribute("aria-pressed",String(L.on));
+  b.classList.toggle("on",L.on&&L.mode!=="off"&&L.mode!=="connecting");
+  b.classList.toggle("wait",L.on&&L.mode==="connecting");
+  b.lastChild.textContent=L.on?"실시간 켜짐":"실시간 꺼짐";
+  t.textContent=!ok?"지난 기간이라 실시간 갱신은 없어요"
+    :!L.on?"눌러서 켜면 계속 갱신돼요"
+    :L.mode==="connecting"?"연결 중…"
+    :L.mode==="poll"?`5초마다 갱신 중${L.last?" · "+hhmmss(L.last):""}`
+    :L.mode==="ws"?(L.last?`마지막 갱신 ${hhmmss(L.last)}`:"연결됨"):"";
+}
+function mergeK(r,k){
+  const rows=r.rows,last=rows[rows.length-1],step=INTERVALS[r.iv].ms;
+  if(!last||k.t>last.t){
+    if(last&&k.t-last.t>step){catchUp(r).then(scheduleRender);return}   // 빠진 봉이 있으면 다시 받아서 메움
+    rows.push(k);
+  }else if(k.t===last.t)rows[rows.length-1]=k;
+  else{const i=rows.findIndex(x=>x.t===k.t);if(i>=0)rows[i]=k}
+}
+function scheduleRender(){
+  L.last=Date.now();
+  if(L.renderT)return;
+  L.renderT=setTimeout(()=>{L.renderT=null;if(!$("res").hidden){showCur();liveUI()}},500);
+}
+function stopLive(){
+  clearTimeout(L.retryT);clearInterval(L.poll);L.poll=null;
+  if(L.ws){L.ws.onclose=L.ws.onerror=L.ws.onmessage=null;try{L.ws.close()}catch(e){}L.ws=null}
+  L.mode="off";
+}
+function startLive(){
+  stopLive();liveUI();
+  if(!L.on||!liveEligible()||document.hidden)return;
+  L.mode="connecting";liveUI();
+  openWs();
+}
+// 실시간 연결(웹소켓). 실패하면 바로 5초 조회로 바꾸고, 30초마다 실시간 연결을 다시 시도
+function openWs(){
+  const r0=S.results[0];
+  const streams=S.results.map(r=>`${r.sym.toLowerCase()}@kline_${r.iv}`).join("/");
+  let ws,done=false;
+  try{ws=new WebSocket(WS_URL[r0.mk]+streams)}catch(e){wsFailed();return}
+  L.ws=ws;
+  const fail=()=>{
+    if(done)return;done=true;clearTimeout(openT);
+    ws.onclose=ws.onerror=ws.onmessage=null;try{ws.close()}catch(e){}
+    if(L.ws===ws)L.ws=null;
+    wsFailed();
+  };
+  const openT=setTimeout(fail,5000);                  // 5초 안에 안 열리면 실패로 봄
+  ws.onopen=()=>{clearTimeout(openT);clearInterval(L.poll);L.poll=null;L.mode="ws";liveUI()};
+  ws.onmessage=ev=>{
+    let m;try{m=JSON.parse(ev.data)}catch(e){return}
+    const d=m.data||m;if(d.e!=="kline")return;
+    const r=S.results.find(x=>x.sym===d.s);if(!r)return;
+    const k=d.k;
+    mergeK(r,{t:k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c,v:+k.v,q:+k.q,n:+k.n});
+    scheduleRender();
+  };
+  ws.onerror=fail;ws.onclose=fail;
+}
+function wsFailed(){
+  if(!L.on||document.hidden||!S.results.length)return;
+  if(!L.poll)startPoll();
+  clearTimeout(L.retryT);
+  L.retryT=setTimeout(()=>{if(L.on&&!document.hidden&&L.mode==="poll")openWs()},30000);
+}
+// 5초마다 최근 봉을 다시 받아옴
+function startPoll(){
+  clearInterval(L.poll);L.mode="poll";liveUI();
+  const tick=async()=>{
+    for(const r of S.results){
+      try{
+        const step=INTERVALS[r.iv].ms;
+        const ks=await fetchKlines(r.sym,Date.now()-2*step,Date.now(),null,r.iv,r.mk);
+        ks.forEach(k=>mergeK(r,k));
+      }catch(e){}
+    }
+    scheduleRender();
+  };
+  tick();L.poll=setInterval(tick,5000);
+}
+async function catchUp(r){
+  const last=r.rows[r.rows.length-1];if(!last)return;
+  try{(await fetchKlines(r.sym,last.t,Date.now(),null,r.iv,r.mk)).forEach(k=>mergeK(r,k))}catch(e){}
+}
+$("live").onclick=()=>{L.on=!L.on;if(L.on)Promise.all(S.results.map(catchUp)).then(()=>{scheduleRender();startLive()});else{stopLive();liveUI()}};
+// 화면을 끄거나 다른 앱으로 가면 멈추고, 돌아오면 빠진 봉을 받아 이어서 갱신
+document.addEventListener("visibilitychange",()=>{
+  if(!S.results.length)return;
+  if(document.hidden){stopLive();return}
+  if(L.on&&liveEligible())Promise.all(S.results.map(catchUp)).then(()=>{scheduleRender();startLive()});
+});
 
 // ───── 엑셀 저장 ─────
 $("save").onclick=()=>{
