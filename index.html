@@ -153,11 +153,11 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     </div>
 
     <div>
-      <p class="lbl">봉 종류</p>
+      <p class="lbl">봉 종류 (여러 개 선택 가능)</p>
       <div class="seg" id="iv">
-        <button type="button" data-v="1h">1시간</button>
-        <button type="button" data-v="4h">4시간</button>
-        <button type="button" data-v="1d" class="on">1일</button>
+        <button type="button" data-v="1h" aria-pressed="false">1시간</button>
+        <button type="button" data-v="4h" aria-pressed="false">4시간</button>
+        <button type="button" data-v="1d" class="on" aria-pressed="true">1일</button>
       </div>
     </div>
 
@@ -215,7 +215,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
       <p class="lbl" style="margin-bottom:2px">최근 10개</p>
       <div class="list" id="list"></div>
     </div>
-    <button class="save" id="save" type="button">엑셀로 저장 (조회한 종목 전체)</button>
+    <button class="save" id="save" type="button">엑셀로 저장 (조회한 종목·시간봉 전체)</button>
   </section>
 
   <p class="foot" id="foot"></p>
@@ -238,7 +238,7 @@ const INTERVALS={
 };
 const FAV_KEY="binance_daily_favorites";
 const $=id=>document.getElementById(id);
-const S={iv:"1d",range:"365",mk:"futures",zoom:"90",results:[],cur:0,period:null};
+const S={ivs:["1d"],range:"365",mk:"futures",zoom:"90",results:[],cur:0,period:null};
 
 // ───── 한글 종목명 ─────
 const COIN_TXT=`BTC:비트코인:비트,빗코
@@ -459,15 +459,29 @@ function seg(id,key,after){
 }
 const isoDay=ms=>new Date(ms).toISOString().slice(0,10);
 $("end").value=isoDay(Date.now());$("start").value=isoDay(Date.now()-365*DAY);
-seg("iv","iv",()=>{$("foot").textContent=INTERVALS[S.iv].foot});
+function updateIntervals(){
+  $("iv").querySelectorAll("button").forEach(b=>{
+    const on=S.ivs.includes(b.dataset.v);
+    b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on));
+  });
+  $("foot").textContent=S.ivs.map(iv=>INTERVALS[iv].foot).join(" ");
+}
+$("iv").querySelectorAll("button").forEach(b=>b.onclick=()=>{
+  const iv=b.dataset.v;
+  if(S.ivs.includes(iv)){
+    if(S.ivs.length===1)return;
+    S.ivs=S.ivs.filter(x=>x!==iv);
+  }else S.ivs=Object.keys(INTERVALS).filter(x=>S.ivs.includes(x)||x===iv);
+  updateIntervals();
+});
 seg("range","range",()=>{$("dates").hidden=S.range!=="custom"});
 seg("mk","mk");
 seg("zoom","zoom",()=>{S.pin=null;draw()});
-$("foot").textContent=INTERVALS[S.iv].foot;
+updateIntervals();
 drawFavs();
 
 // ───── 데이터 받기 ─────
-async function fetchKlines(sym,startMs,endMs,onProgress,iv=S.iv,mk=S.mk){
+async function fetchKlines(sym,startMs,endMs,onProgress,iv=S.ivs[0],mk=S.mk){
   const {url,limit}=MARKETS[mk],step=INTERVALS[iv].ms,rows=[];let cur=startMs;
   while(cur<=endMs){
     const q=`${url}?symbol=${encodeURIComponent(sym)}&interval=${iv}&startTime=${cur}&endTime=${endMs}&limit=${limit}`;
@@ -511,27 +525,28 @@ async function run(){
   let p;try{p=period()}catch(e){setStatus([[e.message,1]]);return}
   stopLive();
   $("go").disabled=true;
-  const results=[],msgs=[],ivName=INTERVALS[S.iv].name;
-  for(const sym of syms){
+  const results=[],msgs=[],ivs=[...S.ivs],mk=S.mk;
+  for(const sym of syms)for(const iv of ivs){
+    const ivName=INTERVALS[iv].name;
     const show=n=>setStatus([...msgs,[`${label(sym)} ${ivName}봉 받는 중… ${n?n.toLocaleString()+"개":""}`]]);
     show(0);
     try{
       let real=sym,rows;
-      const warm=p.a-(MA_MAX-1)*INTERVALS[S.iv].ms;     // 120선을 첫날부터 계산하려고 시작일 앞 119개를 더 받음
-      try{rows=await fetchKlines(sym,warm,p.b,show)}
+      const warm=p.a-(MA_MAX-1)*INTERVALS[iv].ms;     // 120선을 첫날부터 계산하려고 시작일 앞 119개를 더 받음
+      try{rows=await fetchKlines(sym,warm,p.b,show,iv,mk)}
       catch(e){
         // 선물에서는 PEPE·SHIB 같은 코인이 1000PEPEUSDT처럼 1000개 단위로 거래돼서 한 번 더 찾아봄
-        if(!(e.invalid&&S.mk==="futures"&&!sym.startsWith("1000")))throw e;
+        if(!(e.invalid&&mk==="futures"&&!sym.startsWith("1000")))throw e;
         real="1000"+sym;
-        try{rows=await fetchKlines(real,warm,p.b,show)}catch(e2){throw e}
+        try{rows=await fetchKlines(real,warm,p.b,show,iv,mk)}catch(e2){throw e}
       }
       const pre=rows.filter(k=>k.t<p.a);rows=rows.filter(k=>k.t>=p.a);
-      if(!rows.length)msgs.push([`${label(sym)}: 이 기간에는 데이터가 없어요.`,1]);
-      else results.push({sym:real,rows,pre,iv:S.iv,mk:S.mk});
-    }catch(e){msgs.push([`${label(sym)}: ${e.message}`,1])}
+      if(!rows.length)msgs.push([`${label(sym)} ${ivName}봉: 이 기간에는 데이터가 없어요.`,1]);
+      else results.push({sym:real,rows,pre,iv,mk});
+    }catch(e){msgs.push([`${label(sym)} ${ivName}봉: ${e.message}`,1])}
   }
   $("go").disabled=false;
-  if(results.length)msgs.unshift([`${results.length}개 종목 · ${ivName}봉 · ${p.s} ~ ${p.e}`]);
+  if(results.length)msgs.unshift([`${new Set(results.map(r=>r.sym)).size}개 종목 · ${results.length}개 데이터 · ${ivs.map(iv=>INTERVALS[iv].name+"봉").join(" / ")} · ${p.s} ~ ${p.e}`]);
   setStatus(msgs);
   if(!results.length){$("res").hidden=true;return}
   S.results=results;S.cur=0;S.period=p;S.pin=null;
@@ -553,7 +568,7 @@ function drawTabs(){
   const box=$("tabs");box.innerHTML="";box.hidden=S.results.length<2;
   S.results.forEach((r,i)=>{
     const b=document.createElement("button");b.type="button";b.className="chip"+(i===S.cur?" on":"");
-    b.textContent=label(r.sym);b.onclick=()=>{S.cur=i;S.pin=null;drawTabs();showCur()};box.appendChild(b);
+    b.textContent=`${label(r.sym)} · ${INTERVALS[r.iv].name}봉`;b.onclick=()=>{S.cur=i;S.pin=null;drawTabs();showCur()};box.appendChild(b);
   });
 }
 function showCur(){
@@ -731,7 +746,7 @@ cv.addEventListener("pointermove",e=>{if(e.buttons||e.pointerType==="mouse")insp
 window.addEventListener("resize",draw);
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change",draw);
 
-// ───── 실시간 (바이낸스 공개 웹소켓, 조회한 종목 전체) ─────
+// ───── 실시간 (바이낸스 공개 웹소켓, 조회한 종목·시간봉 전체) ─────
 const WS_URL={spot:"wss://stream.binance.com:9443/stream?streams=",futures:"wss://fstream.binance.com/stream?streams="};
 const L={on:true,ws:null,retryT:null,mode:"off",poll:null,renderT:null,last:0};
 const hhmmss=ms=>new Date(ms+KST).toISOString().slice(11,19);
@@ -793,8 +808,8 @@ function openWs(){
   ws.onmessage=ev=>{
     let m;try{m=JSON.parse(ev.data)}catch(e){return}
     const d=m.data||m;if(d.e!=="kline")return;
-    const r=S.results.find(x=>x.sym===d.s);if(!r)return;
     const k=d.k;
+    const r=S.results.find(x=>x.sym===d.s&&x.iv===k.i);if(!r)return;
     mergeK(r,{t:k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c,v:+k.v,q:+k.q,n:+k.n});
     scheduleRender();
   };
@@ -845,7 +860,7 @@ $("save").onclick=()=>{
         "시가":k.o,"고가":k.h,"저가":k.l,"종가":k.c,"거래량":k.v,"거래대금":k.q,"거래횟수":k.n,"등락률(%)":chg,...ma}});
     const ws=XLSX.utils.json_to_sheet(data);
     ws["!cols"]=[r.iv==="1d"?12:17,14,14,14,14,18,20,10,10,14,14,14].map(w=>({wch:w}));
-    XLSX.utils.book_append_sheet(wb,ws,r.sym.slice(0,31));
+    XLSX.utils.book_append_sheet(wb,ws,`${r.sym}_${INTERVALS[r.iv].name}봉`.slice(0,31));
   });
   const fname=`바이낸스 캔들 다운로드(${S.period.s}~${S.period.e}).xlsx`;
   try{XLSX.writeFile(wb,fname);setStatus([[`저장했어요: ${fname}`]])}
