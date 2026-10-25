@@ -126,7 +126,6 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 #liveTxt{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 @keyframes pulse{50%{opacity:.25}}
 @media (prefers-reduced-motion:reduce){.live.on .dot{animation:none}}
-.foot{font-size:12px;color:var(--muted);margin:0 2px}
 </style>
 </head>
 <body>
@@ -218,7 +217,6 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <button class="save" id="save" type="button">엑셀로 저장 (조회한 종목·시간봉 전체)</button>
   </section>
 
-  <p class="foot" id="foot"></p>
 </div>
 
 <script>
@@ -357,6 +355,33 @@ function resolve(tok){
 const symEl=$("sym");
 const symbols=()=>[...new Set(symEl.value.split(",").map(resolve).filter(Boolean))];
 
+// 조회 조건은 같은 브라우저에서 다시 열 때 복원합니다.
+const SETTINGS_KEY="binance_candle_settings_v1";
+function saveSettings(){
+  try{localStorage.setItem(SETTINGS_KEY,JSON.stringify({
+    sym:symEl.value,ivs:S.ivs,range:S.range,mk:S.mk,zoom:S.zoom,
+    start:$("start").value,end:$("end").value
+  }))}catch(e){} // 저장 차단 시에도 조회 기능은 계속 사용 가능
+}
+function restoreSettings(){
+  try{
+    const v=JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if(!v||typeof v!=="object")return;
+    if(typeof v.sym==="string")symEl.value=v.sym;
+    if(Array.isArray(v.ivs)){
+      const ivs=Object.keys(INTERVALS).filter(iv=>v.ivs.includes(iv));
+      if(ivs.length)S.ivs=ivs;
+    }
+    if(["365","730","1095","custom"].includes(v.range))S.range=v.range;
+    if(["futures","spot"].includes(v.mk))S.mk=v.mk;
+    if(["30","90","all"].includes(v.zoom))S.zoom=v.zoom;
+    for(const id of ["start","end"]){
+      if(typeof v[id]==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(v[id]))$(id).value=v[id];
+    }
+  }catch(e){}
+}
+
+
 // ───── 자동완성 ─────
 const sugEl=$("sug");let sugItems=[],sugIdx=-1;
 const curToken=()=>symEl.value.slice(symEl.value.lastIndexOf(",")+1);
@@ -384,9 +409,9 @@ function pick(c){
   const v=symEl.value,head=v.slice(0,v.lastIndexOf(",")+1);
   const parts=head.split(",").map(s=>s.trim()).filter(Boolean);
   if(!parts.map(resolve).includes(c.base+"USDT"))parts.push(c.base);
-  symEl.value=parts.join(", ");closeSug();drawFavs();
+  symEl.value=parts.join(", ");closeSug();drawFavs();saveSettings();
 }
-symEl.addEventListener("input",()=>{openSug();drawFavs()});
+symEl.addEventListener("input",()=>{openSug();drawFavs();saveSettings()});
 symEl.addEventListener("focus",openSug);
 symEl.addEventListener("blur",()=>setTimeout(closeSug,120));
 symEl.addEventListener("keydown",e=>{
@@ -432,7 +457,7 @@ function drawFavs(){
       const parts=symEl.value.split(",").map(t=>t.trim()).filter(Boolean);
       const keep=parts.filter(t=>resolve(t)!==s);
       if(keep.length===parts.length)keep.push(baseOf(s));
-      symEl.value=keep.join(", ");drawFavs();
+      symEl.value=keep.join(", ");drawFavs();saveSettings();
     };
     box.appendChild(b);
   });
@@ -454,7 +479,7 @@ $("editFav").onclick=()=>{editing=!editing;drawFavs()};
 function seg(id,key,after){
   $(id).querySelectorAll("button").forEach(b=>b.onclick=()=>{
     S[key]=b.dataset.v;$(id).querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));
-    if(after)after();
+    saveSettings();if(after)after();
   });
 }
 const isoDay=ms=>new Date(ms).toISOString().slice(0,10);
@@ -464,7 +489,6 @@ function updateIntervals(){
     const on=S.ivs.includes(b.dataset.v);
     b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on));
   });
-  $("foot").textContent=S.ivs.map(iv=>INTERVALS[iv].foot).join(" ");
 }
 $("iv").querySelectorAll("button").forEach(b=>b.onclick=()=>{
   const iv=b.dataset.v;
@@ -472,11 +496,18 @@ $("iv").querySelectorAll("button").forEach(b=>b.onclick=()=>{
     if(S.ivs.length===1)return;
     S.ivs=S.ivs.filter(x=>x!==iv);
   }else S.ivs=Object.keys(INTERVALS).filter(x=>S.ivs.includes(x)||x===iv);
-  updateIntervals();
+  updateIntervals();saveSettings();
 });
 seg("range","range",()=>{$("dates").hidden=S.range!=="custom"});
 seg("mk","mk");
 seg("zoom","zoom",()=>{S.pin=null;draw()});
+restoreSettings();
+for(const [id,key] of [["range","range"],["mk","mk"],["zoom","zoom"]]){
+  $(id).querySelectorAll("button").forEach(b=>b.classList.toggle("on",b.dataset.v===S[key]));
+}
+$("dates").hidden=S.range!=="custom";
+for(const id of ["start","end"])$(id).addEventListener("change",saveSettings);
+window.addEventListener("pagehide",saveSettings);
 updateIntervals();
 drawFavs();
 
@@ -520,6 +551,7 @@ function setStatus(lines){
 }
 
 async function run(){
+  saveSettings();
   const syms=symbols();
   if(!syms.length){setStatus([["종목을 입력하세요.",1]]);return}
   let p;try{p=period()}catch(e){setStatus([[e.message,1]]);return}
