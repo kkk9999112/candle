@@ -14,14 +14,14 @@
 <style>
 :root{
   --bg:#f3f5f8; --card:#ffffff; --fg:#17202b; --muted:#5d6977; --line:#dce2ea; --soft:#eef1f5;
-  --accent:#f0b90b; --accent-ink:#17202b; --up:#d93a3a; --down:#2a6fd6; --err:#c0392b; --ok:#1f8a4c;
+  --accent:#f0b90b; --accent-ink:#17202b; --up:#0ecb81; --down:#f6465d; --err:#c0392b; --ok:#1f8a4c;
   --ma20:#e8890c; --ma60:#159a6a; --ma120:#7a5cd6;
   --font:"Pretendard","Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;
   --mono:ui-monospace,"SF Mono","Consolas",monospace;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#0f1318; --card:#1a2028; --fg:#e9eef4; --muted:#98a4b2; --line:#2a333e; --soft:#222a34;
-  --up:#ef5b5b; --down:#4c8ff0; --err:#ef6b5e; --ok:#4cc27e; --ma20:#f5a43a; --ma60:#3cc690; --ma120:#a08cf0; color-scheme:dark}}
+  --up:#0ecb81; --down:#f6465d; --err:#ef6b5e; --ok:#4cc27e; --ma20:#f5a43a; --ma60:#3cc690; --ma120:#a08cf0; color-scheme:dark}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0}
 body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--font);
@@ -512,12 +512,13 @@ updateIntervals();
 drawFavs();
 
 // ───── 데이터 받기 ─────
-async function fetchKlines(sym,startMs,endMs,onProgress,iv=S.ivs[0],mk=S.mk){
+async function fetchKlines(sym,startMs,endMs,onProgress,iv=S.ivs[0],mk=S.mk,signal){
   const {url,limit}=MARKETS[mk],step=INTERVALS[iv].ms,rows=[];let cur=startMs;
   while(cur<=endMs){
+    signal?.throwIfAborted();
     const q=`${url}?symbol=${encodeURIComponent(sym)}&interval=${iv}&startTime=${cur}&endTime=${endMs}&limit=${limit}`;
     let res;
-    try{res=await fetch(q)}catch(e){throw new Error("바이낸스에 연결하지 못했어요. 인터넷을 확인하거나 와이파이/데이터를 바꿔 보세요.")}
+    try{res=await fetch(q,{signal})}catch(e){if(signal?.aborted)throw e;throw new Error("바이낸스에 연결하지 못했어요. 인터넷을 확인하거나 와이파이/데이터를 바꿔 보세요.")}
     if(!res.ok){
       const body=await res.text();
       if(res.status===451)throw new Error("지금 네트워크에서는 바이낸스 접속이 막혀 있어요(451).");
@@ -550,40 +551,47 @@ function setStatus(lines){
   lines.forEach(([t,err])=>{const d=document.createElement("div");if(err)d.className="err";d.textContent=t;st.appendChild(d)});
 }
 
+let activeQuery=null;
 async function run(){
+  if(activeQuery){activeQuery.abort();$("go").textContent="중단 중…";return}
   saveSettings();
   const syms=symbols();
   if(!syms.length){setStatus([["종목을 입력하세요.",1]]);return}
   let p;try{p=period()}catch(e){setStatus([[e.message,1]]);return}
   stopLive();
-  $("go").disabled=true;
+  const controller=new AbortController(),signal=controller.signal;
+  activeQuery=controller;$("go").textContent="조회 중단";
+  try{
   const results=[],msgs=[],ivs=[...S.ivs],mk=S.mk;
-  for(const sym of syms)for(const iv of ivs){
+  collect: for(const sym of syms)for(const iv of ivs){
+    if(signal.aborted)break collect;
     const ivName=INTERVALS[iv].name;
     const show=n=>setStatus([...msgs,[`${label(sym)} ${ivName}봉 받는 중… ${n?n.toLocaleString()+"개":""}`]]);
     show(0);
     try{
       let real=sym,rows;
       const warm=p.a-(MA_MAX-1)*INTERVALS[iv].ms;     // 120선을 첫날부터 계산하려고 시작일 앞 119개를 더 받음
-      try{rows=await fetchKlines(sym,warm,p.b,show,iv,mk)}
+      try{rows=await fetchKlines(sym,warm,p.b,show,iv,mk,signal)}
       catch(e){
         // 선물에서는 PEPE·SHIB 같은 코인이 1000PEPEUSDT처럼 1000개 단위로 거래돼서 한 번 더 찾아봄
         if(!(e.invalid&&mk==="futures"&&!sym.startsWith("1000")))throw e;
         real="1000"+sym;
-        try{rows=await fetchKlines(real,warm,p.b,show,iv,mk)}catch(e2){throw e}
+        try{rows=await fetchKlines(real,warm,p.b,show,iv,mk,signal)}catch(e2){if(signal.aborted)throw e2;throw e}
       }
+      signal.throwIfAborted();
       const pre=rows.filter(k=>k.t<p.a);rows=rows.filter(k=>k.t>=p.a);
       if(!rows.length)msgs.push([`${label(sym)} ${ivName}봉: 이 기간에는 데이터가 없어요.`,1]);
       else results.push({sym:real,rows,pre,iv,mk});
-    }catch(e){msgs.push([`${label(sym)} ${ivName}봉: ${e.message}`,1])}
+    }catch(e){if(signal.aborted)break collect;msgs.push([`${label(sym)} ${ivName}봉: ${e.message}`,1])}
   }
-  $("go").disabled=false;
+  if(signal.aborted)msgs.push(["조회를 중단했어요. 완료된 종목·시간봉만 표시해요."]);
   if(results.length)msgs.unshift([`${new Set(results.map(r=>r.sym)).size}개 종목 · ${results.length}개 데이터 · ${ivs.map(iv=>INTERVALS[iv].name+"봉").join(" / ")} · ${p.s} ~ ${p.e}`]);
   setStatus(msgs);
   if(!results.length){$("res").hidden=true;return}
   S.results=results;S.cur=0;S.period=p;S.pin=null;
-  $("res").hidden=false;drawTabs();showCur();startLive();
+  $("res").hidden=false;drawTabs();showCur();if(!signal.aborted)startLive();else liveUI();
   if(matchMedia("(max-width:700px)").matches)$("res").scrollIntoView({behavior:"smooth",block:"start"});
+  }finally{activeQuery=null;$("go").textContent="조회하기";}
 }
 $("go").onclick=run;
 
