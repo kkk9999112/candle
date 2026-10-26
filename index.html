@@ -81,7 +81,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .head .chg{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
 .head .note{font-size:11.5px;color:var(--muted)}
 .up{color:var(--up)} .down{color:var(--down)}
-.chartbox{position:relative;height:240px;touch-action:none}
+.chartbox{position:relative;height:240px;touch-action:pan-y}
 .chartbox canvas{width:100%;height:100%;display:block}
 #tip{font-size:12px;color:var(--muted);min-height:18px;font-variant-numeric:tabular-nums;margin:0}
 .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
@@ -204,7 +204,6 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <div class="mahead"><button type="button" class="link" id="maColBtn" aria-expanded="false" aria-controls="maPanel">선 색 바꾸기</button></div>
     <div class="mapanel" id="maPanel" hidden></div>
     <div class="chartbox"><canvas id="cv" role="img" aria-label="캔들 차트와 거래량"></canvas></div>
-    <p id="tip">차트를 누르거나 밀면 그 봉의 가격이 보여요</p>
     <div class="stats">
       <div class="stat"><p class="k">기간 최고</p><p class="v" id="sHi"></p></div>
       <div class="stat"><p class="k">기간 최저</p><p class="v" id="sLo"></p></div>
@@ -500,7 +499,7 @@ $("iv").querySelectorAll("button").forEach(b=>b.onclick=()=>{
 });
 seg("range","range",()=>{$("dates").hidden=S.range!=="custom"});
 seg("mk","mk");
-seg("zoom","zoom",()=>{S.pin=null;draw()});
+seg("zoom","zoom",()=>{draw()});
 restoreSettings();
 for(const [id,key] of [["range","range"],["mk","mk"],["zoom","zoom"]]){
   $(id).querySelectorAll("button").forEach(b=>b.classList.toggle("on",b.dataset.v===S[key]));
@@ -588,7 +587,7 @@ async function run(){
   if(results.length)msgs.unshift([`${new Set(results.map(r=>r.sym)).size}개 종목 · ${results.length}개 데이터 · ${ivs.map(iv=>INTERVALS[iv].name+"봉").join(" / ")} · ${p.s} ~ ${p.e}`]);
   setStatus(msgs);
   if(!results.length){$("res").hidden=true;return}
-  S.results=results;S.cur=0;S.period=p;S.pin=null;
+  S.results=results;S.cur=0;S.period=p;
   $("res").hidden=false;drawTabs();showCur();if(!signal.aborted)startLive();else liveUI();
   if(matchMedia("(max-width:700px)").matches)$("res").scrollIntoView({behavior:"smooth",block:"start"});
   }finally{activeQuery=null;$("go").textContent="조회하기";}
@@ -608,7 +607,7 @@ function drawTabs(){
   const box=$("tabs");box.innerHTML="";box.hidden=S.results.length<2;
   S.results.forEach((r,i)=>{
     const b=document.createElement("button");b.type="button";b.className="chip"+(i===S.cur?" on":"");
-    b.textContent=`${label(r.sym)} · ${INTERVALS[r.iv].name}봉`;b.onclick=()=>{S.cur=i;S.pin=null;drawTabs();showCur()};box.appendChild(b);
+    b.textContent=`${label(r.sym)} · ${INTERVALS[r.iv].name}봉`;b.onclick=()=>{S.cur=i;drawTabs();showCur()};box.appendChild(b);
   });
 }
 function showCur(){
@@ -719,7 +718,7 @@ function toggleMaPanel(open){
 $("maColBtn").onclick=()=>toggleMaPanel();
 
 // 캔들 차트 (한국식: 상승 빨강, 하락 파랑)
-const cv=$("cv"),ctx=cv.getContext("2d");let geo=null;
+const cv=$("cv"),ctx=cv.getContext("2d");
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
 function draw(){
   if(!S.results.length||$("res").hidden)return;
@@ -764,25 +763,7 @@ function draw(){
   [0,Math.floor(rows.length/2)].forEach(i=>ctx.fillText(tLabel(rows[i].t,r.iv,true),Math.min(i*bw,cw-60),top+ph+13));
   const last=rows[rows.length-1],ly=Math.round(y(last.c))+.5;
   ctx.setLineDash([3,3]);ctx.strokeStyle=last.c>=last.o?UP:DN;ctx.beginPath();ctx.moveTo(0,ly);ctx.lineTo(cw,ly);ctx.stroke();ctx.setLineDash([]);
-  geo={rows,bw,cw,y,H,iv:r.iv};
-  const pi=S.pin==null?-1:rows.findIndex(k=>k.t===S.pin);
-  if(pi<0){
-    $("tip").textContent=asLine?"봉이 많아서 종가 선으로 보여줘요. 누르면 그 봉의 가격이 보여요":"차트를 누르거나 밀면 그 봉의 가격이 보여요";
-    return;
-  }
-  const k=rows[pi],X=Math.round(pi*bw+bw/2)+.5;ctx.strokeStyle=MUT;ctx.setLineDash([2,3]);
-  ctx.beginPath();ctx.moveTo(X,0);ctx.lineTo(X,H);ctx.stroke();ctx.setLineDash([]);
-  const ma=MA_LIST.map(n=>{const v=MA[n][off+pi];return `SMA${n} ${v==null?"-":fmtP(v,k.c)}`}).join("  ");
-  $("tip").textContent=`${tLabel(k.t,r.iv)}  시 ${fmtP(k.o)}  고 ${fmtP(k.h)}  저 ${fmtP(k.l)}  종 ${fmtP(k.c)}\n${ma}`;
-  drawLegend(r,MA,off+pi);
 }
-function inspect(e){
-  if(!geo)return;
-  const rc=cv.getBoundingClientRect(),x=e.clientX-rc.left,i=Math.min(geo.rows.length-1,Math.max(0,Math.floor(x/geo.bw)));
-  S.pin=geo.rows[i].t;draw();
-}
-cv.addEventListener("pointerdown",e=>{cv.setPointerCapture(e.pointerId);inspect(e)});
-cv.addEventListener("pointermove",e=>{if(e.buttons||e.pointerType==="mouse")inspect(e)});
 window.addEventListener("resize",draw);
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change",draw);
 
